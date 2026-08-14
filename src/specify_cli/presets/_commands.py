@@ -9,6 +9,7 @@ keeps working.
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 
 import typer
@@ -17,6 +18,9 @@ from rich.markup import escape as _escape_markup
 
 from .._console import console
 from .._download_security import (
+    archive_format_from_name,
+    archive_suffix,
+    detect_archive_format,
     is_https_or_localhost_http,
     is_safe_download_redirect,
     read_response_limited,
@@ -55,7 +59,15 @@ def preset_list():
         console.print("  [cyan]specify preset add <pack-name>[/cyan]")
         return
 
-    console.print("\n[bold cyan]Installed Presets:[/bold cyan]\n")
+    # Sort by actual resolution precedence: lower priority number wins, ties
+    # broken by preset id (matching PresetRegistry.list_by_priority()). This
+    # keeps the printed order aligned with how presets are composed/resolved.
+    installed = sorted(
+        installed,
+        key=lambda pack: (pack.get("priority", 10), str(pack.get("id", ""))),
+    )
+
+    console.print("\n[bold cyan]Installed Presets[/bold cyan] [dim](in resolution order — highest precedence first)[/dim]\n")
     for pack in installed:
         status = "[green]enabled[/green]" if pack.get("enabled", True) else "[red]disabled[/red]"
         pri = pack.get('priority', 10)
@@ -71,11 +83,17 @@ def preset_list():
         console.print(f"    [dim]Templates: {pack['template_count']}[/dim]")
         console.print()
 
+    console.print("[dim]Lower priority number = higher precedence. Ties are broken by preset id (alphabetical).[/dim]")
+
 
 @preset_app.command("add")
 def preset_add(
     preset_id: str = typer.Argument(None, help="Preset ID to install from catalog"),
-    from_url: str = typer.Option(None, "--from", help="Install from a URL (ZIP file)"),
+    from_url: str = typer.Option(
+        None,
+        "--from",
+        help="Install from a .zip, .tar.gz, or .tgz URL",
+    ),
     dev: str = typer.Option(None, "--dev", help="Install from local directory (development mode)"),
     priority: int = typer.Option(10, "--priority", help="Resolution priority (lower = higher precedence, default 10)"),
 ):
@@ -142,7 +160,7 @@ def preset_add(
             import tempfile
 
             with tempfile.TemporaryDirectory() as tmpdir:
-                zip_path = Path(tmpdir) / "preset.zip"
+                archive_path = Path(tmpdir) / "preset.archive"
                 try:
                     from specify_cli.authentication.http import open_url as _open_url
                     from specify_cli.authentication.http import github_provider_hosts
@@ -170,13 +188,33 @@ def preset_add(
                                 "or HTTP for localhost (127.0.0.1, ::1)."
                             )
                             raise typer.Exit(1)
-                        zip_path.write_bytes(
-                            read_response_limited(
-                                response,
-                                error_type=PresetError,
-                                label=f"preset {from_url}",
-                            )
+                        archive_data = read_response_limited(
+                            response,
+                            error_type=PresetError,
+                            label=f"preset {from_url}",
                         )
+                        content_type = (
+                            response.getheader("Content-Type")
+                            if hasattr(response, "getheader")
+                            else None
+                        )
+                    archive_path.write_bytes(archive_data)
+                    format_source = (
+                        final_url
+                        if archive_format_from_name(final_url) is not None
+                        else from_url
+                    )
+                    archive_format = detect_archive_format(
+                        archive_path,
+                        source_name=format_source,
+                        content_type=content_type,
+                        error_type=PresetError,
+                    )
+                    detected_path = archive_path.with_suffix(
+                        archive_suffix(archive_format)
+                    )
+                    os.replace(archive_path, detected_path)
+                    archive_path = detected_path
                 except (urllib.error.URLError, PresetError) as e:
                     console.print(
                         f"[red]Error:[/red] Failed to download: "
@@ -184,7 +222,11 @@ def preset_add(
                     )
                     raise typer.Exit(1)
 
-                manifest = manager.install_from_zip(zip_path, speckit_version, priority)
+                manifest = manager.install_from_zip(
+                    archive_path,
+                    speckit_version,
+                    priority,
+                )
 
             console.print(f"[green]✓[/green] Preset '{manifest.name}' v{manifest.version} installed (priority {priority})")
 
@@ -227,12 +269,16 @@ def preset_add(
                 console.print(f"Installing preset [cyan]{pack_info.get('name', preset_id)}[/cyan]...")
 
                 try:
-                    zip_path = catalog.download_pack(preset_id)
-                    manifest = manager.install_from_zip(zip_path, speckit_version, priority)
+                    archive_path = catalog.download_pack(preset_id)
+                    manifest = manager.install_from_zip(
+                        archive_path,
+                        speckit_version,
+                        priority,
+                    )
                     console.print(f"[green]✓[/green] Preset '{manifest.name}' v{manifest.version} installed (priority {priority})")
                 finally:
-                    if 'zip_path' in locals() and zip_path.exists():
-                        zip_path.unlink(missing_ok=True)
+                    if 'archive_path' in locals() and archive_path.exists():
+                        archive_path.unlink(missing_ok=True)
         else:
             console.print("[red]Error:[/red] Specify a preset ID, --from URL, or --dev path")
             raise typer.Exit(1)
@@ -317,9 +363,26 @@ def preset_resolve(
     from .. import _require_specify_project
     from . import PresetResolver
 
+    is_command = "." in template_name
+    valid_name = (
+        re.fullmatch(r"[a-z0-9-]+(?:\.[a-z0-9-]+)+", template_name)
+        if is_command
+        else re.fullmatch(r"[a-z0-9-]+", template_name)
+    )
+    if valid_name is None:
+        typer.echo(
+            f"Error: invalid template name '{template_name}'; "
+            "use lowercase letters, digits, and hyphens, with non-empty "
+            "dot-separated segments for commands",
+            err=True,
+        )
+        raise typer.Exit(1)
+
     project_root = _require_specify_project()
     resolver = PresetResolver(project_root)
-    layers = resolver.collect_all_layers(template_name)
+    template_type = "command" if is_command else "template"
+
+    layers = resolver.collect_all_layers(template_name, template_type)
     safe_template_name = _escape_markup(str(template_name))
 
     if layers:
@@ -342,7 +405,7 @@ def preset_resolve(
         if has_composition:
             # Verify composition is actually possible
             try:
-                composed = resolver.resolve_content(template_name)
+                composed = resolver.resolve_content(template_name, template_type)
             except Exception as exc:
                 composed = None
                 console.print(
@@ -381,7 +444,7 @@ def preset_resolve(
                 )
     else:
         # No layers found — fall back to resolve_with_source for non-composition cases
-        result = resolver.resolve_with_source(template_name)
+        result = resolver.resolve_with_source(template_name, template_type)
         if result:
             console.print(
                 f"  [bold]{safe_template_name}[/bold]: "
@@ -765,8 +828,8 @@ def preset_catalog_remove(
 
     try:
         config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
-    except Exception:
-        console.print("[red]Error:[/red] Failed to read preset catalog config.")
+    except Exception as e:
+        console.print(f"[red]Error:[/red] Failed to read preset catalog config: {e}")
         raise typer.Exit(1)
 
     catalogs = config.get("catalogs", [])

@@ -20,7 +20,7 @@ import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Set
+from typing import Any, BinaryIO, Callable, Dict, List, Optional, Set
 
 import pathspec
 import yaml
@@ -29,11 +29,14 @@ from packaging.specifiers import InvalidSpecifier, SpecifierSet
 
 from .._assets import _locate_core_pack, _repo_root
 from .._download_security import (
+    archive_format_from_name,
+    archive_suffix,
     MAX_JSON_CATALOG_BYTES,
     build_safe_download_path,
+    detect_archive_format,
     is_https_or_localhost_http,
     read_response_limited,
-    safe_extract_zip,
+    safe_extract_archive,
 )
 from .._init_options import is_ai_skills_enabled
 from .._invocation_style import is_dollar_skills_agent, is_slash_skills_agent
@@ -57,6 +60,13 @@ _FALLBACK_CORE_COMMAND_NAMES = frozenset(
     }
 )
 EXTENSION_COMMAND_NAME_PATTERN = re.compile(r"^speckit\.([a-z0-9-]+)\.([a-z0-9-]+)$")
+
+# Naming pattern for provides.templates / provides.scripts entries. Unlike
+# commands, these are not namespaced (they aren't invoked via a command
+# name), so they follow the same plain slug pattern as extension.id.
+VALID_EXTENSION_ARTIFACT_NAME_PATTERN = re.compile(r"^[a-z0-9-]+$")
+
+VALID_SCRIPT_RUNTIMES = frozenset({"bash", "powershell", "python"})
 
 VALID_EFFECTS = frozenset({"read-only", "read-write"})
 
@@ -282,9 +292,25 @@ class ExtensionManifest:
             raise ValidationError(
                 f"Invalid extension: expected a mapping, got {type(ext).__name__}"
             )
+        # Check presence AND type: the format/version checks below feed these
+        # values straight to ``re.match`` and ``packaging.Version``, both of
+        # which raise a bare TypeError on a non-string. YAML makes that an easy
+        # authoring slip -- unquoted ``version: 1.0`` parses as a float and
+        # ``id: 2`` as an int -- and TypeError is not a ValidationError, so it
+        # escapes every caller that already handles a malformed manifest (see
+        # list_installed()'s "Corrupted extension" fallback, which catches
+        # ValidationError only, making one bad extension exit ``specify
+        # extension list`` with a raw traceback and hide the healthy ones).
+        # Mirrors the sibling IntegrationDescriptor, which already type-checks
+        # the same four fields.
         for field in ["id", "name", "version", "description"]:
             if field not in ext:
                 raise ValidationError(f"Missing extension.{field}")
+            if not isinstance(ext[field], str):
+                raise ValidationError(
+                    f"Invalid extension.{field}: expected a string, "
+                    f"got {type(ext[field]).__name__}"
+                )
 
         # Validate extension ID format
         if not re.match(r"^[a-z0-9-]+$", ext["id"]):
@@ -322,6 +348,25 @@ class ExtensionManifest:
             )
         if "speckit_version" not in requires:
             raise ValidationError("Missing requires.speckit_version")
+        # Presence alone is not enough: check_compatibility() feeds this value to
+        # ``SpecifierSet(required)``, guarded only by ``except InvalidSpecifier``,
+        # which a non-string escapes two different ways. A float/int/bool/None
+        # raises TypeError from the constructor, while a list or dict is an
+        # *iterable*, so SpecifierSet accepts it and the failure surfaces much
+        # later as ``AttributeError: 'str' object has no attribute 'filter'`` from
+        # inside .contains(). Neither is a CompatibilityError, so both bypass the
+        # CLI's "Compatibility Error" handler and exit 1 with a raw traceback
+        # naming no field. An unquoted ``speckit_version: 1.0`` is an easy YAML
+        # slip. Mirrors the sibling IntegrationDescriptor, which already requires
+        # a non-empty string here.
+        if (
+            not isinstance(requires["speckit_version"], str)
+            or not requires["speckit_version"].strip()
+        ):
+            raise ValidationError(
+                "Invalid requires.speckit_version: expected a non-empty string, "
+                f"got {type(requires['speckit_version']).__name__}"
+            )
 
         # Validate provides section
         provides = self.data["provides"]
@@ -330,11 +375,17 @@ class ExtensionManifest:
                 f"Invalid provides: expected a mapping, got {type(provides).__name__}"
             )
         commands = provides.get("commands", [])
+        templates = provides.get("templates", [])
+        scripts = provides.get("scripts", [])
         hooks = self.data.get("hooks")
         events = self.data.get("events")
 
         if "commands" in provides and not isinstance(commands, list):
             raise ValidationError("Invalid provides.commands: expected a list")
+        if "templates" in provides and not isinstance(templates, list):
+            raise ValidationError("Invalid provides.templates: expected a list")
+        if "scripts" in provides and not isinstance(scripts, list):
+            raise ValidationError("Invalid provides.scripts: expected a list")
         if "hooks" in self.data and not isinstance(hooks, dict):
             raise ValidationError("Invalid hooks: expected a mapping")
         if "events" in self.data:
@@ -344,9 +395,17 @@ class ExtensionManifest:
         has_commands = bool(commands)
         has_hooks = bool(hooks)
         has_events = bool(events)
+        has_templates = bool(templates)
+        has_scripts = bool(scripts)
 
-        if not has_commands and not has_hooks and not has_events:
-            raise ValidationError("Extension must provide at least one command, hook, or event")
+        if not has_commands and not has_hooks and not has_events and not has_templates and not has_scripts:
+            raise ValidationError(
+                "Extension must provide at least one command, hook, or event "
+                "(or a declared template/script)"
+            )
+
+        self._validate_provided_artifacts(templates, section="templates", singular="template")
+        self._validate_provided_artifacts(scripts, section="scripts", singular="script")
 
         # Validate hook values (if present).
         # Each event is a single mapping or a list of mappings.
@@ -388,6 +447,16 @@ class ExtensionManifest:
                 )
             if "name" not in cmd or "file" not in cmd:
                 raise ValidationError("Command missing 'name' or 'file'")
+            # The pattern match below would raise a bare TypeError on a
+            # non-string name (``name: 2``), escaping the ValidationError
+            # contract. The 'file' field needs no check here:
+            # relative_extension_path_violation() below already rejects a
+            # non-string value.
+            if not isinstance(cmd["name"], str):
+                raise ValidationError(
+                    f"Invalid command name: expected a string, "
+                    f"got {type(cmd['name']).__name__}"
+                )
 
             # Validate the 'file' field at manifest-load time using the single
             # shared policy in relative_extension_path_violation(), so manifest
@@ -498,6 +567,80 @@ class ExtensionManifest:
                     )
 
     @staticmethod
+    def _validate_provided_artifacts(entries: List[Any], section: str, singular: str) -> None:
+        """Validate provides.templates / provides.scripts entries.
+
+        Mirrors the shape/path-safety checks PresetManifest applies to its
+        non-command templates, minus 'type' (the section name already
+        distinguishes template vs script) and 'strategy' (extension-provided
+        artifacts are always 'replace' -- see the forced-replace resolver
+        behavior for extension layers in presets/__init__.py). A present
+        'strategy' key is rejected rather than silently ignored, so an author
+        who copies a preset-style entry gets a clear error instead of a
+        silently-dropped field. Duplicate names within a section are also
+        rejected: the resolver returns the first matching entry by name
+        (``PresetResolver._extension_manifest_declared_template``), so a
+        later duplicate would be silently unreachable while still being
+        exposed by ``ExtensionManifest.templates``/``.scripts``.
+        """
+        seen_names: set[str] = set()
+        for entry in entries:
+            if not isinstance(entry, dict):
+                raise ValidationError(
+                    f"Each entry in 'provides.{section}' must be a mapping"
+                )
+            if "name" not in entry or "file" not in entry:
+                raise ValidationError(f"{singular.capitalize()} missing 'name' or 'file'")
+
+            name = entry["name"]
+            if not isinstance(name, str):
+                raise ValidationError(
+                    f"Invalid {singular} name: expected a string, got {type(name).__name__}"
+                )
+            if not VALID_EXTENSION_ARTIFACT_NAME_PATTERN.match(name):
+                raise ValidationError(
+                    f"Invalid {singular} name '{name}': "
+                    "must be lowercase alphanumeric with hyphens only"
+                )
+            if name in seen_names:
+                raise ValidationError(
+                    f"Duplicate {singular} name '{name}' in 'provides.{section}'"
+                )
+            seen_names.add(name)
+
+            file_value = entry["file"]
+            reason = relative_extension_path_violation(file_value)
+            if reason:
+                label = repr(file_value) if isinstance(file_value, str) else f"for {singular} '{name}'"
+                raise ValidationError(f"Invalid {singular} 'file' {label}: {reason}")
+
+            if "description" in entry and not isinstance(entry["description"], str):
+                raise ValidationError(
+                    f"Invalid {singular} description for '{name}': expected a string"
+                )
+
+            if "strategy" in entry:
+                raise ValidationError(
+                    f"Invalid {singular} entry '{name}': 'strategy' is not authorable for "
+                    "extension-provided artifacts, which always use 'replace' semantics"
+                )
+
+            if section == "scripts" and "runtimes" in entry:
+                runtimes = entry["runtimes"]
+                if not isinstance(runtimes, list) or not all(
+                    isinstance(r, str) for r in runtimes
+                ):
+                    raise ValidationError(
+                        f"Invalid runtimes for script '{name}': expected a list of strings"
+                    )
+                invalid = sorted(set(runtimes) - VALID_SCRIPT_RUNTIMES)
+                if invalid:
+                    raise ValidationError(
+                        f"Invalid runtimes {invalid} for script '{name}': "
+                        f"must be one of {sorted(VALID_SCRIPT_RUNTIMES)}"
+                    )
+
+    @staticmethod
     def _try_correct_command_name(name: str, ext_id: str) -> Optional[str]:
         """Try to auto-correct a non-conforming command name to the required pattern.
 
@@ -560,14 +703,35 @@ class ExtensionManifest:
         return self.data.get("provides", {}).get("commands", [])
 
     @property
+    def config(self) -> List[Dict[str, Any]]:
+        """Get list of provided config templates, normalized to dictionaries."""
+        raw = self.data.get("provides", {}).get("config", [])
+        if not isinstance(raw, list) or not all(isinstance(entry, dict) for entry in raw):
+            return []
+        return raw
+
+    @property
+    def templates(self) -> List[Dict[str, Any]]:
+        """Get list of declared templates (provides.templates)."""
+        return self.data.get("provides", {}).get("templates", [])
+
+    @property
+    def scripts(self) -> List[Dict[str, Any]]:
+        """Get list of declared scripts (provides.scripts)."""
+        return self.data.get("provides", {}).get("scripts", [])
+
+    @property
     def hooks(self) -> Dict[str, Any]:
         """Get hook definitions."""
         return self.data.get("hooks", {})
 
     def get_hash(self) -> str:
         """Calculate SHA256 hash of manifest file."""
+        h = hashlib.sha256()
         with open(self.path, "rb") as f:
-            return f"sha256:{hashlib.sha256(f.read()).hexdigest()}"
+            for chunk in iter(lambda: f.read(8192), b""):
+                h.update(chunk)
+        return f"sha256:{h.hexdigest()}"
 
 
 class ExtensionRegistry:
@@ -591,6 +755,13 @@ class ExtensionRegistry:
         if not self.registry_path.exists():
             return {"schema_version": self.SCHEMA_VERSION, "extensions": {}}
 
+        # A non-regular file (e.g. a directory at the registry path) is not a
+        # readable registry. Recover to empty so construction — used by the
+        # install/enable/disable flows — does not crash. Resolution paths that
+        # must fail closed consult is_corrupt() instead of relying on this.
+        if not self.registry_path.is_file():
+            return {"schema_version": self.SCHEMA_VERSION, "extensions": {}}
+
         try:
             with open(self.registry_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
@@ -601,9 +772,46 @@ class ExtensionRegistry:
             if not isinstance(data.get("extensions"), dict):
                 data["extensions"] = {}
             return data
-        except (json.JSONDecodeError, FileNotFoundError):
-            # Corrupted or missing registry, start fresh
+        except (json.JSONDecodeError, UnicodeDecodeError, FileNotFoundError):
+            # Corrupted or missing registry, start fresh. A registry whose
+            # bytes cannot be decoded as UTF-8 is the same corruption class as
+            # malformed JSON — only the exception type differs, and it is
+            # raised by the text-mode read before JSON parsing begins. OSError
+            # is deliberately not caught: the data may be intact on disk, and
+            # starting fresh would let a later _save() wipe it.
             return {"schema_version": self.SCHEMA_VERSION, "extensions": {}}
+
+    def is_corrupt(self) -> bool:
+        """Report whether an existing registry file is present but unreadable.
+
+        ``_load`` deliberately recovers from a corrupt registry by normalizing
+        it to an empty mapping so install/enable/disable flows keep working.
+        Resolution paths, however, must fail closed: a corrupt registry that
+        normalizes to ``{}`` would otherwise cause every on-disk extension
+        directory to be admitted as an unregistered, enabled extension. This
+        probe lets those callers distinguish "no registry" (safe) from
+        "registry exists but is invalid" (unsafe) without changing recovery
+        behavior. An absent registry returns ``False``; a directory, broken
+        or dangling symlink, non-regular file, unreadable file, non-mapping
+        root, or non-mapping ``extensions`` value returns ``True``.
+        """
+        # os.path.lexists (not Path.exists) so a dangling symlink is detected
+        # rather than followed to a non-existent target and mistaken for an
+        # absent registry — which would reopen the fail-open directory scan.
+        if not os.path.lexists(self.registry_path):
+            return False
+        if not self.registry_path.is_file():
+            return True
+        try:
+            with open(self.registry_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+            return True
+        if not isinstance(data, dict):
+            return True
+        if "extensions" in data and not isinstance(data["extensions"], dict):
+            return True
+        return False
 
     def _save(self):
         """Save registry to disk."""
@@ -1811,6 +2019,17 @@ class ExtensionManager:
         required = manifest.requires_speckit_version
 
         # Parse version specifier (e.g., ">=0.1.0,<2.0.0")
+        # Defense in depth: the manifest validator now rejects a non-string
+        # requires.speckit_version, but this method is public and also reachable
+        # with a hand-built manifest object. ``InvalidSpecifier`` alone does not
+        # cover a non-string -- scalars raise TypeError from the constructor, and
+        # a list/dict is iterable so it constructs here and only breaks inside
+        # .contains(). Reject up front so this always reports a CompatibilityError.
+        if not isinstance(required, str):
+            raise CompatibilityError(
+                "Invalid version specifier: expected a string, got "
+                f"{type(required).__name__} ({required!r})"
+            )
         try:
             SpecifierSet(required)  # Just to validate
         except InvalidSpecifier:
@@ -2053,8 +2272,19 @@ class ExtensionManager:
                         _staged_modes = _loaded_modes
             for staged_name in sorted(staged_names):
                 staged_file = rescue_staging_dir / staged_name
-                staged_stat = staged_file.stat()
-                staged_bytes = staged_file.read_bytes()
+                # A staged backup that cannot be read or stat'ed must not
+                # crash the retry with a raw OSError: like an uncomparable
+                # live config below, treat it as a conflict so both copies
+                # are preserved and the user resolves it while dest_dir is
+                # still untouched. Every sibling read in this path (live
+                # twin, packaged baseline, mode sidecar) already catches
+                # OSError.
+                try:
+                    staged_stat = staged_file.stat()
+                    staged_bytes = staged_file.read_bytes()
+                except OSError:
+                    conflicting.add(staged_name)
+                    continue
                 # Prefer the sidecar-recorded mode; fall back to the staged
                 # file's own mode for backwards-compat with staging dirs
                 # written before the sidecar was introduced.
@@ -2146,10 +2376,24 @@ class ExtensionManager:
                         "a regular file or remove it — then reinstall."
                     )
                 if cfg_file.is_file():
-                    stranded_configs[cfg_file.name] = (
-                        cfg_file.read_bytes(),
-                        cfg_file.stat().st_mode,
-                    )
+                    # A kept config that cannot be read or stat'ed must not
+                    # crash the reinstall with a raw OSError — and must not
+                    # reach the rmtree below unrescued. Like the symlink
+                    # guard above, reject while dest_dir is untouched so the
+                    # preserved bytes are never lost.
+                    try:
+                        stranded_configs[cfg_file.name] = (
+                            cfg_file.read_bytes(),
+                            cfg_file.stat().st_mode,
+                        )
+                    except OSError as exc:
+                        raise ValidationError(
+                            "Preserved extension config for "
+                            f"'{manifest.id}' cannot be read "
+                            f"({cfg_file.name}) in {dest_dir}: {exc}. "
+                            "Resolve manually — fix its permissions or "
+                            "remove it — then reinstall."
+                        ) from exc
 
         if stranded_configs and not staging_is_complete:
             # Write a durable backup outside dest_dir before any
@@ -2400,7 +2644,7 @@ class ExtensionManager:
                 pass  # Best-effort; install already committed to the registry.
 
         # Restore execute bits on shipped POSIX scripts. copytree here (and the
-        # zipfile.extractall in install_from_zip, which delegates to this method) does
+        # archive extraction in install_from_archive, which delegates here, does
         # not restore a stripped Unix mode, so a bundled *.sh would land non-executable
         # and a documented `.specify/extensions/<id>/scripts/...` invocation would fail
         # with "Permission denied". This is the single sink every install route funnels
@@ -2419,21 +2663,27 @@ class ExtensionManager:
 
         return manifest
 
-    def install_from_zip(
+    def install_from_archive(
         self,
-        zip_path: Path,
+        archive_path: Path,
         speckit_version: str,
         priority: int = 10,
         force: bool = False,
+        *,
+        archive_file: BinaryIO | None = None,
+        source_name: str | None = None,
+        content_type: str | None = None,
     ) -> ExtensionManifest:
-        """Install extension from ZIP file.
+        """Install an extension from a supported archive.
 
         Args:
-            zip_path: Path to extension ZIP file
+            archive_path: Path to a .zip, .tar.gz, or .tgz archive
             speckit_version: Current spec-kit version
             priority: Resolution priority (lower = higher precedence, default 10)
             force: If True and extension is already installed, remove it first
                    before proceeding with installation
+            archive_file: Already-open archive stream to consume instead of
+                          reopening ``zip_path``
 
         Returns:
             Installed extension manifest
@@ -2449,7 +2699,14 @@ class ExtensionManager:
         with tempfile.TemporaryDirectory() as tmpdir:
             temp_path = Path(tmpdir)
 
-            safe_extract_zip(zip_path, temp_path, error_type=ValidationError)
+            safe_extract_archive(
+                archive_path,
+                temp_path,
+                archive_file=archive_file,
+                source_name=source_name,
+                content_type=content_type,
+                error_type=ValidationError,
+            )
 
             # Find extension directory (may be nested)
             extension_dir = temp_path
@@ -2463,12 +2720,177 @@ class ExtensionManager:
                     manifest_path = extension_dir / "extension.yml"
 
             if not manifest_path.exists():
-                raise ValidationError("No extension.yml found in ZIP file")
+                raise ValidationError("No extension.yml found in archive")
 
             # Install from extracted directory
             return self.install_from_directory(
                 extension_dir, speckit_version, priority=priority, force=force
             )
+
+    def _config_root_is_contained(self, specify_dir: Path) -> bool:
+        """Report whether `.specify` is a real directory inside the project.
+
+        Checked component by component so a symlink anywhere on the path is
+        rejected before it becomes the containment root. A missing `.specify`
+        is fine: scaffolding creates it under the project root.
+        """
+        try:
+            root = self.project_root.resolve()
+        except OSError:
+            return False
+        current = self.project_root
+        for part in specify_dir.relative_to(self.project_root).parts:
+            current = current / part
+            if current.is_symlink():
+                return False
+            if not current.exists():
+                return True
+            try:
+                if current.resolve().relative_to(root) is None:
+                    return False
+            except (OSError, ValueError):
+                return False
+        return current.is_dir()
+
+    @staticmethod
+    def _target_follows_preserved_convention(target_name: str) -> bool:
+        """True when a scaffold target survives remove/backup/restore.
+
+        Those paths only handle top-level ``*-config.yml`` and
+        ``*-config.local.yml`` files, so anything nested or otherwise named is
+        not preserved across an update.
+        """
+        if "/" in target_name or "\\" in target_name:
+            return False
+        return target_name.endswith("-config.yml") or target_name.endswith(
+            "-config.local.yml"
+        )
+
+    def scaffold_config(self, extension_id: str) -> tuple[List[str], List[str], List[str]]:
+        """Deploy config templates from an installed extension to the project.
+
+        Reads the extension's manifest provides.config section and copies
+        each config template to the project's .specify/ directory. Existing
+        config files are never overwritten (user customizations are preserved).
+
+        Args:
+            extension_id: ID of the installed extension
+
+        Returns:
+            Tuple of (deployed, skipped_existing, failed) where each is a list
+            of config file names.
+        """
+        ext_dir = self.extensions_dir / extension_id
+        manifest_path = ext_dir / "extension.yml"
+        if not manifest_path.exists():
+            return [], [], []
+
+        manifest = ExtensionManifest(manifest_path)
+        deployed = []
+        skipped_existing = []
+        failed = []
+
+        provides = manifest.data.get("provides", {})
+        raw_config = provides.get("config", [])
+        config_is_malformed = (
+            "config" in provides
+            and (
+                not isinstance(raw_config, list)
+                or not all(isinstance(entry, dict) for entry in raw_config)
+            )
+        )
+        if config_is_malformed:
+            return deployed, skipped_existing, ["provides.config"]
+
+        ext_dir_resolved = ext_dir.resolve()
+        # Config is deployed beneath the extension's own directory because that
+        # is where it is read from: ConfigManager._get_project_config() loads
+        # `.specify/extensions/<id>/<id>-config.yml`, and the bundled scripts
+        # and READMEs use the same location. Writing to `.specify/<name>` put
+        # the file somewhere nothing ever looks.
+        config_dir = self.project_root / ".specify" / "extensions" / extension_id
+        # Resolving that directory and trusting the result as the containment
+        # root lets a symlinked component point outside the project: every
+        # target would then satisfy relative_to and copy2 would write
+        # externally. Refuse a symlinked component up front, matching the
+        # project safe-write path in shared_infra.
+        if not self._config_root_is_contained(config_dir):
+            return deployed, skipped_existing, ["provides.config"]
+        config_dir_resolved = config_dir.resolve()
+
+        for config_entry in manifest.config:
+            template_name = config_entry.get("template", "")
+            target_name = config_entry.get("name", template_name)
+            failure_name = target_name if isinstance(target_name, str) and target_name else "provides.config"
+            if not isinstance(template_name, str) or not template_name:
+                failed.append(failure_name)
+                continue
+            if not isinstance(target_name, str) or not target_name:
+                failed.append(failure_name)
+                continue
+            # Only scaffold what removal actually preserves. remove(keep_config)
+            # keeps top-level files ending in -config.yml / -config.local.yml and
+            # rmtree's every subdirectory; the backup path globs the same
+            # top-level pattern. A nested or differently-named target would be
+            # silently destroyed by `extension add --force` and replaced with the
+            # template default, losing the user's customization.
+            if not self._target_follows_preserved_convention(target_name):
+                failed.append(failure_name)
+                continue
+
+            template_candidate = ext_dir / template_name
+            template_path = template_candidate.resolve()
+            target_path = (config_dir / target_name).resolve()
+            try:
+                template_path.relative_to(ext_dir_resolved)
+                target_path.relative_to(config_dir_resolved)
+            except ValueError:
+                failed.append(failure_name)
+                continue
+
+            if template_candidate.is_symlink() or not template_path.is_file():
+                failed.append(failure_name)
+                continue
+
+            if target_path.exists():
+                skipped_existing.append(target_name)
+                continue
+
+            try:
+                # mkdir belongs inside the handler: a nested target like
+                # foo/config.yml must land in `failed` when `.specify/foo` is a
+                # file or cannot be created, not raise out of scaffolding after
+                # `extension add` has already installed the extension.
+                target_path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(template_path, target_path)
+            except OSError:
+                failed.append(target_name)
+                continue
+            deployed.append(target_name)
+
+        return deployed, skipped_existing, failed
+
+    def install_from_zip(
+        self,
+        zip_path: Path,
+        speckit_version: str,
+        priority: int = 10,
+        force: bool = False,
+        *,
+        archive_file: BinaryIO | None = None,
+        source_name: str | None = None,
+        content_type: str | None = None,
+    ) -> ExtensionManifest:
+        """Backward-compatible wrapper for archive installation."""
+        return self.install_from_archive(
+            zip_path,
+            speckit_version,
+            priority=priority,
+            force=force,
+            archive_file=archive_file,
+            source_name=source_name,
+            content_type=content_type,
+        )
 
     def remove(self, extension_id: str, keep_config: bool = False) -> bool:
         """Remove an installed extension.
@@ -3787,14 +4209,14 @@ class ExtensionCatalog(CatalogStackBase):
     def download_extension(
         self, extension_id: str, target_dir: Optional[Path] = None
     ) -> Path:
-        """Download extension ZIP from catalog.
+        """Download an extension archive from a catalog.
 
         Args:
             extension_id: ID of the extension to download
-            target_dir: Directory to save ZIP file (defaults to temp directory)
+            target_dir: Directory to save the archive
 
         Returns:
-            Path to downloaded ZIP file
+            Path to the downloaded archive
 
         Raises:
             ExtensionError: If extension not found or download fails
@@ -3853,45 +4275,88 @@ class ExtensionCatalog(CatalogStackBase):
             target_dir = self.cache_dir / "downloads"
         target_dir = Path(target_dir)
         version = ext_info.get("version", "unknown")
-        zip_path = build_safe_download_path(
+        declared_format = archive_format_from_name(download_url)
+        build_safe_download_path(
             target_dir,
             extension_id,
             version,
             error_type=ExtensionError,
             label="extension",
+            suffix=archive_suffix(declared_format or "tar.gz"),
         )
         target_dir.mkdir(parents=True, exist_ok=True)
 
+        original_download_url = download_url
         extra_headers = None
         resolved_download_url = self._resolve_github_release_asset_api_url(download_url)
         if resolved_download_url:
             download_url = resolved_download_url
             extra_headers = {"Accept": "application/octet-stream"}
 
-        # Download the ZIP file
+        staging_path: Path | None = None
         try:
             with self._open_url(
                 download_url, timeout=60, extra_headers=extra_headers
             ) as response:
-                zip_data = read_response_limited(
+                archive_data = read_response_limited(
                     response,
                     error_type=ExtensionError,
                     label=f"extension '{extension_id}' download",
                 )
+                final_url = (
+                    response.geturl()
+                    if hasattr(response, "geturl")
+                    else download_url
+                )
+                content_type = (
+                    response.getheader("Content-Type")
+                    if hasattr(response, "getheader")
+                    else None
+                )
 
             verify_archive_sha256(
-                zip_data, ext_info.get("sha256"), extension_id, ExtensionError
+                archive_data, ext_info.get("sha256"), extension_id, ExtensionError
             )
 
-            zip_path.write_bytes(zip_data)
-            return zip_path
+            with tempfile.NamedTemporaryFile(
+                prefix="extension-download-",
+                suffix=".archive",
+                dir=target_dir,
+                delete=False,
+            ) as staging_file:
+                staging_path = Path(staging_file.name)
+                staging_file.write(archive_data)
+            archive_format = detect_archive_format(
+                staging_path,
+                source_name=(
+                    final_url
+                    if archive_format_from_name(final_url) is not None
+                    else original_download_url
+                ),
+                content_type=content_type,
+                error_type=ExtensionError,
+            )
+            archive_path = build_safe_download_path(
+                target_dir,
+                extension_id,
+                version,
+                error_type=ExtensionError,
+                label="extension",
+                suffix=archive_suffix(archive_format),
+            )
+            os.replace(staging_path, archive_path)
+            staging_path = None
+            return archive_path
 
         except urllib.error.URLError as e:
             raise ExtensionError(
                 f"Failed to download extension from {download_url}: {e}"
             )
         except IOError as e:
-            raise ExtensionError(f"Failed to save extension ZIP: {e}")
+            raise ExtensionError(f"Failed to save extension archive: {e}")
+        finally:
+            if staging_path is not None:
+                staging_path.unlink(missing_ok=True)
 
     def clear_cache(self):
         """Clear the catalog cache (both legacy and URL-hash-based files)."""
@@ -3994,11 +4459,10 @@ class ConfigManager:
         Returns an empty list if the registry is missing or corrupted
         (fresh project, ad-hoc test harness) so ``_get_env_config`` degrades
         to its pre-fix behaviour rather than crashing. ``UnicodeError`` is
-        caught alongside ``OSError`` because ``ExtensionRegistry._load()``
-        opens the file in text mode and only handles ``JSONDecodeError`` /
-        ``FileNotFoundError``, so a registry file with non-UTF-8 bytes would
-        otherwise surface a ``UnicodeDecodeError`` here and break *every*
-        config read instead of degrading gracefully.
+        kept alongside ``OSError`` as belt-and-braces: ``_load()`` now starts
+        fresh on non-UTF-8 registry bytes itself, but catching it here too
+        keeps this call site degrading gracefully rather than breaking *every*
+        config read if that handling ever regresses.
 
         Used by ``_get_env_config`` to detect env vars whose remainder claims
         a longer, sibling-owned prefix (e.g. ``SPECKIT_GIT_HOOKS_URL`` is
@@ -4248,6 +4712,7 @@ class HookExecutor:
         kimi_skill_mode = selected_ai == "kimi"
         cline_mode = selected_ai == "cline"
         forge_mode = selected_ai == "forge"
+        junie_mode = selected_ai == "junie"
 
         skill_name = self._skill_name_from_command(command_id)
         if dollar_skill_mode and skill_name:
@@ -4262,6 +4727,10 @@ class HookExecutor:
             from ..integrations.forge import format_forge_command_name
 
             return f"/{format_forge_command_name(command_id)}"
+        if junie_mode:
+            from ..integrations.junie import format_junie_command_name
+
+            return f"/{format_junie_command_name(command_id)}"
 
         use_slash = is_slash_skills_agent(selected_ai, ai_skills_enabled)
 

@@ -1,8 +1,43 @@
 {
   "schema_version": "1.0",
-  "updated_at": "2026-07-29T00:00:00Z",
+  "updated_at": "2026-08-13T00:00:00Z",
   "catalog_url": "https://raw.githubusercontent.com/github/spec-kit/main/extensions/catalog.community.json",
   "extensions": {
+    "adrkit": {
+      "name": "adrkit — decision memory for spec-driven development",
+      "id": "adrkit",
+      "description": "Pulls the decisions governing this work into agent context, checks produced plans against them, and drafts an ADR from a plan artifact.",
+      "author": "Mark Beacom (@mbeacom)",
+      "version": "0.1.2",
+      "download_url": "https://github.com/mbeacom/adrkit/releases/download/spec-kit-v0.1.2/adrkit.zip",
+      "repository": "https://github.com/mbeacom/adrkit",
+      "homepage": "https://adrkit.dev",
+      "documentation": "https://github.com/mbeacom/adrkit/blob/main/packages/adapters/spec-kit/README.md",
+      "changelog": "https://github.com/mbeacom/adrkit/blob/main/CHANGELOG.md",
+      "license": "Apache-2.0",
+      "category": "process",
+      "effect": "read-write",
+      "requires": {
+        "speckit_version": ">=0.13.0,<0.16.0",
+        "tools": [{ "name": "adr", "version": ">=0.3.0", "required": true }]
+      },
+      "provides": {
+        "commands": 3,
+        "hooks": 1
+      },
+      "tags": [
+        "adr",
+        "governance",
+        "decision-records",
+        "architecture",
+        "compliance"
+      ],
+      "verified": false,
+      "downloads": 0,
+      "stars": 0,
+      "created_at": "2026-08-03T00:00:00Z",
+      "updated_at": "2026-08-03T00:00:00Z"
+    },
     "aide": {
       "name": "AI-Driven Engineering (AIDE)",
       "id": "aide",
@@ -327,8 +362,8 @@
       "id": "archive",
       "description": "Archive merged features into main project memory, resolving gaps and conflicts.",
       "author": "Stanislav Deviatov",
-      "version": "1.0.0",
-      "download_url": "https://github.com/stn1slv/spec-kit-archive/archive/refs/tags/v1.0.0.zip",
+      "version": "1.2.2",
+      "download_url": "https://github.com/stn1slv/spec-kit-archive/archive/refs/tags/v1.2.2.zip",
       "repository": "https://github.com/stn1slv/spec-kit-archive",
       "homepage": "https://github.com/stn1slv/spec-kit-archive",
       "documentation": "https://github.com/stn1slv/spec-kit-archive/blob/main/README.md",
@@ -353,7 +388,45 @@
       "downloads": 0,
       "stars": 0,
       "created_at": "2026-03-14T00:00:00Z",
-      "updated_at": "2026-03-14T00:00:00Z"
+      "updated_at": "2026-08-11T00:00:00Z"
+    },
+    "atlas": {
+      "name": "spec-kit-atlas",
+      "id": "atlas",
+      "description": "Synthesize spec-kit specs into faithful, interactive architecture storybooks & doc portals.",
+      "author": "Ash Brener",
+      "version": "0.1.0",
+      "download_url": "https://github.com/ashbrener/spec-kit-atlas/archive/refs/tags/v0.1.0.zip",
+      "repository": "https://github.com/ashbrener/spec-kit-atlas",
+      "homepage": "https://github.com/ashbrener/spec-kit-atlas",
+      "documentation": "https://github.com/ashbrener/spec-kit-atlas/blob/main/README.md",
+      "changelog": "https://github.com/ashbrener/spec-kit-atlas/blob/main/CHANGELOG.md",
+      "license": "MIT",
+      "category": "docs",
+      "effect": "read-only",
+      "requires": {
+        "speckit_version": ">=0.1.0",
+        "tools": [
+          { "name": "python", "version": ">=3.11", "required": true },
+          { "name": "uv", "required": true }
+        ]
+      },
+      "provides": {
+        "commands": 2,
+        "hooks": 0
+      },
+      "tags": [
+        "documentation",
+        "architecture",
+        "storybook",
+        "traceability",
+        "atlas"
+      ],
+      "verified": false,
+      "downloads": 0,
+      "stars": 0,
+      "created_at": "2026-08-13T00:00:00Z",
+      "updated_at": "2026-08-13T00:00:00Z"
     },
     "azure-devops": {
       "name": "Azure DevOps Integration",
@@ -776,8 +849,8 @@
       "id": "charter",
       "description": "Compose modular project constitutions from shared fragment registries. Centralize governance rules, select per-project fragments, track upstream changes, and keep multi-project setups consistent.",
       "author": "Fyloss",
-      "version": "0.3.1",
-      "download_url": "https://github.com/Fyloss/spec-kit-charter/archive/refs/tags/v0.3.1.zip",
+      "version": "0.5.1",
+      "download_url": "https://github.com/Fyloss/spec-kit-charter/archive/refs/tags/v0.5.1.zip",
       "repository": "https://github.com/Fyloss/spec-kit-charter",
       "homepage": "https://github.com/Fyloss/spec-kit-charter",
       "documentation": "https://github.com/Fyloss/spec-kit-charter/tree/master/docs",
@@ -786,7 +859,8 @@
       "category": "process",
       "effect": "read-write",
       "requires": {
-        "speckit_version": ">=0.11.9"
+        "speckit_version": ">=0.11.9",
+        "tools": [{ "name": "git", "required": false }]
       },
       "provides": {
         "commands": 5,
@@ -803,7 +877,7 @@
       "downloads": 0,
       "stars": 0,
       "created_at": "2026-07-06T00:00:00Z",
-      "updated_at": "2026-07-06T00:00:00Z"
+      "updated_at": "2026-08-04T00:00:00Z"
     },
     "ci-guard": {
       "name": "CI Guard",
@@ -1069,6 +1143,41 @@
       "stars": 0,
       "created_at": "2026-03-29T00:00:00Z",
       "updated_at": "2026-03-29T00:00:00Z"
+    },
+    "contextforge-mcp": {
+      "name": "ContextForge MCP",
+      "id": "contextforge-mcp",
+      "description": "Integrates codebase-memory-mcp + headroom into Spec Kit — graph-based code intelligence and context compression for the implement phase.",
+      "author": "capatinore",
+      "version": "0.1.0",
+      "download_url": "https://github.com/capatinore/contextforge-mcp/releases/download/ext-v0.1.0/contextforge-mcp-speckit-extension.zip",
+      "repository": "https://github.com/capatinore/contextforge-mcp",
+      "homepage": "https://github.com/capatinore/contextforge-mcp",
+      "documentation": "https://github.com/capatinore/contextforge-mcp/blob/main/README.md",
+      "changelog": "",
+      "license": "MIT",
+      "category": "code",
+      "effect": "read-write",
+      "requires": {
+        "speckit_version": ">=0.10.0"
+      },
+      "provides": {
+        "commands": 4,
+        "hooks": 0
+      },
+      "tags": [
+        "mcp",
+        "code-intelligence",
+        "context-compression",
+        "tokens",
+        "claude",
+        "spec-driven-development"
+      ],
+      "verified": false,
+      "downloads": 0,
+      "stars": 0,
+      "created_at": "2026-07-13T00:00:00Z",
+      "updated_at": "2026-07-13T00:00:00Z"
     },
     "cost": {
       "name": "Cost Tracker",
@@ -1744,6 +1853,41 @@
       "created_at": "2026-06-24T00:00:00Z",
       "updated_at": "2026-07-07T00:00:00Z"
     },
+    "grill": {
+      "name": "SpecKit Grill Me",
+      "id": "grill",
+      "description": "Exhaustively resolve specification ambiguities and decisions before planning.",
+      "author": "yoshi1220",
+      "version": "1.0.0",
+      "download_url": "https://github.com/yoshi1220/speckit-grill-me/releases/download/v1.0.0/speckit-grill-me-extension-v1.0.0.zip",
+      "repository": "https://github.com/yoshi1220/speckit-grill-me",
+      "homepage": "https://github.com/yoshi1220/speckit-grill-me/tree/main/spec-kit-extension",
+      "documentation": "https://github.com/yoshi1220/speckit-grill-me/blob/main/spec-kit-extension/README.md",
+      "changelog": "https://github.com/yoshi1220/speckit-grill-me/blob/main/spec-kit-extension/CHANGELOG.md",
+      "license": "MIT",
+      "category": "process",
+      "effect": "read-write",
+      "requires": {
+        "speckit_version": ">=0.16.2",
+        "tools": [{ "name": "bash", "required": true }]
+      },
+      "provides": {
+        "commands": 1,
+        "hooks": 0
+      },
+      "tags": [
+        "clarification",
+        "requirements",
+        "specification",
+        "elicitation",
+        "workflow"
+      ],
+      "verified": false,
+      "downloads": 0,
+      "stars": 0,
+      "created_at": "2026-08-11T00:00:00Z",
+      "updated_at": "2026-08-11T00:00:00Z"
+    },
     "harness": {
       "name": "Research Harness",
       "id": "harness",
@@ -2035,6 +2179,40 @@
       "stars": 0,
       "created_at": "2026-06-08T00:00:00Z",
       "updated_at": "2026-06-24T00:00:00Z"
+    },
+    "keel": {
+      "name": "Keel Discovery",
+      "id": "keel",
+      "description": "A Spec Kit extension that puts customer evidence upstream of /speckit.specify, and audits what you shipped against it afterwards.",
+      "author": "Keel Discovery",
+      "version": "0.1.1",
+      "download_url": "https://github.com/keeldiscovery/spec-kit-keel/archive/refs/tags/v0.1.1.zip",
+      "repository": "https://github.com/keeldiscovery/spec-kit-keel",
+      "homepage": "https://keeldiscovery.com",
+      "documentation": "https://github.com/keeldiscovery/spec-kit-keel/blob/main/README.md",
+      "changelog": "https://github.com/keeldiscovery/spec-kit-keel/blob/main/CHANGELOG.md",
+      "license": "Apache-2.0",
+      "category": "process",
+      "effect": "read-write",
+      "requires": {
+        "speckit_version": ">=0.15.0"
+      },
+      "provides": {
+        "commands": 5,
+        "hooks": 2
+      },
+      "tags": [
+        "discovery",
+        "evidence",
+        "customer-research",
+        "validation",
+        "traceability"
+      ],
+      "verified": false,
+      "downloads": 0,
+      "stars": 0,
+      "created_at": "2026-08-10T00:00:00Z",
+      "updated_at": "2026-08-10T00:00:00Z"
     },
     "learn": {
       "name": "Learning Extension",
@@ -3335,8 +3513,8 @@
       "id": "reconcile",
       "description": "Reconcile implementation drift by surgically updating the feature's own spec, plan, and tasks.",
       "author": "Stanislav Deviatov",
-      "version": "1.0.0",
-      "download_url": "https://github.com/stn1slv/spec-kit-reconcile/archive/refs/tags/v1.0.0.zip",
+      "version": "1.1.0",
+      "download_url": "https://github.com/stn1slv/spec-kit-reconcile/archive/refs/tags/v1.1.0.zip",
       "repository": "https://github.com/stn1slv/spec-kit-reconcile",
       "homepage": "https://github.com/stn1slv/spec-kit-reconcile",
       "documentation": "https://github.com/stn1slv/spec-kit-reconcile/blob/main/README.md",
@@ -3361,7 +3539,7 @@
       "downloads": 0,
       "stars": 0,
       "created_at": "2026-03-14T00:00:00Z",
-      "updated_at": "2026-03-14T00:00:00Z"
+      "updated_at": "2026-08-10T00:00:00Z"
     },
     "red-team": {
       "name": "Red Team",
@@ -4008,6 +4186,78 @@
       "created_at": "2026-04-30T00:00:00Z",
       "updated_at": "2026-04-30T00:00:00Z"
     },
+    "specassay-check": {
+      "name": "SpecAssay Check",
+      "id": "specassay-check",
+      "description": "Gate 2 refuses silent gaps and emits a trace-manifest (trace-manifest.json).",
+      "author": "Rik Dryfoos",
+      "version": "0.3.3",
+      "download_url": "https://github.com/rdryfoos/specassay/releases/download/v0.3.3/specassay-check-0.3.3.zip",
+      "repository": "https://github.com/rdryfoos/specassay",
+      "homepage": "https://www.specassay.com",
+      "documentation": "https://github.com/rdryfoos/specassay/blob/main/extensions/specassay-check/README.md",
+      "changelog": "https://github.com/rdryfoos/specassay/blob/main/CHANGELOG.md",
+      "license": "MIT",
+      "category": "visibility",
+      "effect": "read-write",
+      "requires": {
+        "speckit_version": ">=0.14.0",
+        "tools": [
+          { "name": "bash", "required": true },
+          { "name": "python3", "version": ">=3.8", "required": true }
+        ]
+      },
+      "provides": {
+        "commands": 1,
+        "hooks": 1
+      },
+      "tags": [
+        "traceability",
+        "gate",
+        "ci",
+        "governance",
+        "sdd"
+      ],
+      "verified": false,
+      "downloads": 0,
+      "stars": 0,
+      "created_at": "2026-08-13T00:00:00Z",
+      "updated_at": "2026-08-13T00:00:00Z"
+    },
+    "specjudge": {
+      "name": "SpecJudge — right-size the model before you implement",
+      "id": "specjudge",
+      "description": "Recommends the model that fits your tasks, citing the spec fragment behind every level.",
+      "author": "Joaquín Ruiz",
+      "version": "0.5.4",
+      "download_url": "https://github.com/JoaquinRuiz/SpecJudge/releases/download/v0.5.4/spec-kit-specjudge.zip",
+      "repository": "https://github.com/JoaquinRuiz/SpecJudge",
+      "homepage": "https://github.com/JoaquinRuiz/SpecJudge",
+      "documentation": "https://github.com/JoaquinRuiz/SpecJudge/blob/main/extensions/spec-kit/README.md",
+      "changelog": "https://github.com/JoaquinRuiz/SpecJudge/blob/main/extensions/spec-kit/CHANGELOG.md",
+      "license": "MIT",
+      "category": "process",
+      "effect": "read-only",
+      "requires": {
+        "speckit_version": ">=0.13.0",
+        "tools": [{ "name": "specjudge", "version": ">=0.5.0", "required": true }]
+      },
+      "provides": {
+        "commands": 1,
+        "hooks": 1
+      },
+      "tags": [
+        "cost",
+        "model-selection",
+        "local-first",
+        "ollama"
+      ],
+      "verified": false,
+      "downloads": 0,
+      "stars": 0,
+      "created_at": "2026-08-12T00:00:00Z",
+      "updated_at": "2026-08-12T00:00:00Z"
+    },
     "speckit-superpowers-bridge": {
       "name": "Superpowers Implementation Bridge",
       "id": "speckit-superpowers-bridge",
@@ -4417,6 +4667,47 @@
       "stars": 0,
       "created_at": "2026-06-22T00:00:00Z",
       "updated_at": "2026-06-22T00:00:00Z"
+    },
+    "tdd": {
+      "name": "TDD Extension",
+      "id": "tdd",
+      "description": "Drives spec-kit implementation with tests: a language-agnostic red-green-refactor loop with a per-feature test list, recorded red and green evidence, and mutation-checked test strength.",
+      "author": "d0whc3r",
+      "version": "1.1.2",
+      "download_url": "https://github.com/d0whc3r/spec-kit-tdd/releases/download/v1.1.2/tdd-1.1.2.zip",
+      "repository": "https://github.com/d0whc3r/spec-kit-tdd",
+      "homepage": "https://d0whc3r.github.io/spec-kit-tdd/",
+      "documentation": "https://github.com/d0whc3r/spec-kit-tdd/wiki",
+      "changelog": "https://github.com/d0whc3r/spec-kit-tdd/blob/main/CHANGELOG.md",
+      "license": "MIT",
+      "category": "process",
+      "effect": "read-write",
+      "requires": {
+        "speckit_version": ">=0.11.9"
+      },
+      "provides": {
+        "commands": 4,
+        "hooks": 3
+      },
+      "tags": [
+        "acceptance-tests",
+        "mutation-testing",
+        "property-based-testing",
+        "quality",
+        "red-green-refactor",
+        "spec-kit",
+        "spec-kit-extension",
+        "tdd",
+        "test-driven-development",
+        "test-first",
+        "testing",
+        "unit-tests"
+      ],
+      "verified": false,
+      "downloads": 0,
+      "stars": 0,
+      "created_at": "2026-08-04T00:00:00Z",
+      "updated_at": "2026-08-04T00:00:00Z"
     },
     "team-assign": {
       "name": "Team Assign",
