@@ -91,26 +91,42 @@ from ._init_options import (
 app = typer.Typer(
     name="specify",
     help="Setup tool for Specify spec-driven development projects",
-    add_completion=False,
+    add_completion=True,
     invoke_without_command=True,
     cls=BannerGroup,
 )
+
 
 def _version_callback(value: bool):
     if value:
         console.print(f"specify {get_speckit_version()}")
         raise typer.Exit()
 
+
 @app.callback()
 def callback(
     ctx: typer.Context,
-    version: bool = typer.Option(False, "--version", "-V", callback=_version_callback, is_eager=True, help="Show version and exit."),
+    version: bool = typer.Option(
+        False,
+        "--version",
+        "-V",
+        callback=_version_callback,
+        is_eager=True,
+        help="Show version and exit.",
+    ),
 ):
     """Show banner when no subcommand is provided."""
-    if ctx.invoked_subcommand is None and "--help" not in sys.argv and "-h" not in sys.argv:
+    if (
+        ctx.invoked_subcommand is None
+        and "--help" not in sys.argv
+        and "-h" not in sys.argv
+    ):
         show_banner()
-        console.print(Align.center("[dim]Run 'specify --help' for usage information[/dim]"))
+        console.print(
+            Align.center("[dim]Run 'specify --help' for usage information[/dim]")
+        )
         console.print()
+
 
 def _refresh_shared_templates(
     project_path: Path,
@@ -210,11 +226,15 @@ def _install_shared_infra_or_exit(
             refresh_hint=refresh_hint,
         )
     except (ValueError, OSError) as exc:
-        console.print(f"[red]Error:[/red] Failed to install shared infrastructure: {exc}")
+        console.print(
+            f"[red]Error:[/red] Failed to install shared infrastructure: {exc}"
+        )
         raise typer.Exit(1)
 
 
-def ensure_executable_scripts(project_path: Path, tracker: StepTracker | None = None) -> None:
+def ensure_executable_scripts(
+    project_path: Path, tracker: StepTracker | None = None
+) -> None:
     """Ensure POSIX .sh scripts under .specify/scripts and .specify/extensions (recursively) have execute bits (no-op on Windows)."""
     if os.name == "nt":
         return  # Windows: skip silently
@@ -255,20 +275,26 @@ def ensure_executable_scripts(project_path: Path, tracker: StepTracker | None = 
             except Exception as e:
                 failures.append(f"{_display_project_path(project_path, script)}: {e}")
     if tracker:
-        detail = f"{updated} updated" + (f", {len(failures)} failed" if failures else "")
+        detail = f"{updated} updated" + (
+            f", {len(failures)} failed" if failures else ""
+        )
         tracker.add("chmod", "Set script permissions recursively")
         (tracker.error if failures else tracker.complete)("chmod", detail)
     else:
         if updated:
-            console.print(f"[cyan]Updated execute permissions on {updated} script(s) recursively[/cyan]")
+            console.print(
+                f"[cyan]Updated execute permissions on {updated} script(s) recursively[/cyan]"
+            )
         if failures:
             console.print("[yellow]Some scripts could not be updated:[/yellow]")
             for f in failures:
                 console.print(f"  - {f}")
 
+
 # ---------------------------------------------------------------------------
 # Skills directory helpers
 # ---------------------------------------------------------------------------
+
 
 def _get_skills_dir(project_path: Path, selected_ai: str) -> Path:
     """Resolve the agent-specific skills directory.
@@ -323,14 +349,18 @@ def resolve_active_skills_dir(project_root: Path) -> Path | None:
         if not skills_dir.is_dir():
             return None
         _ensure_safe_shared_directory(
-            project_root, skills_dir,
-            create=False, context="agent skills directory",
+            project_root,
+            skills_dir,
+            create=False,
+            context="agent skills directory",
         )
         return skills_dir
 
     # ai_skills is boolean True: create the directory safely.
     _ensure_safe_shared_directory(
-        project_root, skills_dir, context="agent skills directory",
+        project_root,
+        skills_dir,
+        context="agent skills directory",
     )
     return skills_dir
 
@@ -359,7 +389,9 @@ def _print_cli_warning(
 ) -> None:
     """Print a warning that names the failed CLI phase and target."""
     label = _cli_phase_label(phase, target_kind, target)
-    console.print(f"[yellow]Warning:[/yellow] Failed to {label}: {_cli_error_detail(exc)}")
+    console.print(
+        f"[yellow]Warning:[/yellow] Failed to {label}: {_cli_error_detail(exc)}"
+    )
     if continuing:
         console.print(f"[dim]{continuing}[/dim]")
 
@@ -383,6 +415,7 @@ SKILL_DESCRIPTIONS = {
 # ===== init command =====
 # Moved to commands/init.py — registered here to preserve CLI surface.
 from .commands import init as _init_cmd  # noqa: E402
+
 _init_cmd.register(app)
 
 
@@ -424,7 +457,9 @@ def check():
     if not any(agent_results.values()):
         console.print("[dim]Tip: Install a coding agent for the best experience[/dim]")
 
-    console.print("[dim]Tip: Run 'specify self check' to verify you have the latest CLI version[/dim]")
+    console.print(
+        "[dim]Tip: Run 'specify self check' to verify you have the latest CLI version[/dim]"
+    )
 
 
 def _feature_capabilities() -> dict[str, bool]:
@@ -494,11 +529,12 @@ def version(
         info_table,
         title="[bold cyan]Specify CLI Information[/bold cyan]",
         border_style="cyan",
-        padding=(1, 2)
+        padding=(1, 2),
     )
 
     console.print(panel)
     console.print()
+
 
 app.add_typer(_self_app, name="self")
 
@@ -507,6 +543,7 @@ app.add_typer(_self_app, name="self")
 
 # Moved to extensions/_commands.py — registered here to preserve CLI surface.
 from .extensions._commands import register as _register_extension_cmds  # noqa: E402
+
 _register_extension_cmds(app)
 
 
@@ -514,11 +551,13 @@ _register_extension_cmds(app)
 
 # Moved to integrations/_commands.py — registered here to preserve CLI surface.
 from .integrations._commands import register as _register_integration_cmds  # noqa: E402
+
 _register_integration_cmds(app)
 
 
 # ===== Event Commands =====
 from .commands.event import register as _register_event_cmds  # noqa: E402
+
 _register_event_cmds(app)
 
 # Re-export selected helpers to preserve the public import surface.
@@ -526,7 +565,9 @@ from .integrations._helpers import (  # noqa: E402
     _clear_init_options_for_integration as _clear_init_options_for_integration,
     _update_init_options_for_integration as _update_init_options_for_integration,
 )
-from ._project import _resolve_init_dir_override as _resolve_init_dir_override  # noqa: E402
+from ._project import (
+    _resolve_init_dir_override as _resolve_init_dir_override,
+)  # noqa: E402
 
 
 def _require_specify_project() -> Path:
@@ -546,7 +587,9 @@ def _require_specify_project() -> Path:
     project_root = Path.cwd()
     if (project_root / ".specify").is_dir():
         return project_root
-    err_console.print("[red]Error:[/red] Not a Spec Kit project (no .specify/ directory)")
+    err_console.print(
+        "[red]Error:[/red] Not a Spec Kit project (no .specify/ directory)"
+    )
     err_console.print(
         "Run this command from a Spec Kit project root or set SPECIFY_INIT_DIR to one."
     )
@@ -557,6 +600,7 @@ def _require_specify_project() -> Path:
 
 # Moved to presets/_commands.py — registered here to preserve CLI surface.
 from .presets._commands import register as _register_preset_cmds  # noqa: E402
+
 _register_preset_cmds(app)
 
 
@@ -564,6 +608,7 @@ _register_preset_cmds(app)
 
 # Bundler subcommand group (specify bundle ...) — see commands/bundle/.
 from .commands.bundle import register as _register_bundle_cmds  # noqa: E402
+
 _register_bundle_cmds(app)
 
 
@@ -571,6 +616,7 @@ _register_bundle_cmds(app)
 
 # Moved to workflows/_commands.py — registered here to preserve CLI surface.
 from .workflows._commands import register as _register_workflow_cmds  # noqa: E402
+
 _register_workflow_cmds(app)
 
 # Re-exported at the package root because bundler primitives import these
@@ -582,6 +628,7 @@ from .workflows._commands import (  # noqa: E402,F401
     workflow_step_add,
     workflow_step_remove,
 )
+
 
 def main():
     # On Windows the default stdout/stderr code page (e.g. cp1252) cannot encode
@@ -596,6 +643,7 @@ def main():
             except (AttributeError, ValueError, OSError):
                 pass
     app()
+
 
 if __name__ == "__main__":
     main()
